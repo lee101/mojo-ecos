@@ -87,19 +87,23 @@ Platform: Linux 6.8.0-136-generic x86_64, glibc 2.39. Reference: ECOS 2.0.14.
 
 | Problem | mojo-ecos | upstream ECOS | Mojo speedup |
 |---|---:|---:|---:|
-| box LP, n=30 / m=60 | 0.211 ms | 0.100 ms | 0.48x |
-| box LP, n=80 / m=160 | 0.818 ms | 0.247 ms | 0.30x |
-| dense LP, n=30 / m=90 | 0.382 ms | 0.772 ms | 2.02x |
-| portfolio SOCP, n=20 | 0.327 ms | 0.181 ms | 0.55x |
-| portfolio SOCP, n=40 | 0.771 ms | 0.359 ms | 0.47x |
+| box LP, n=30 / m=60 | 0.130 ms | 0.100 ms | 0.77x |
+| box LP, n=80 / m=160 | 0.196 ms | 0.257 ms | 1.31x |
+| dense LP, n=30 / m=90 | 0.473 ms | 0.823 ms | 1.74x |
+| portfolio SOCP, n=20 | 0.350 ms | 0.187 ms | 0.53x |
+| portfolio SOCP, n=40 | 0.647 ms | 0.339 ms | 0.52x |
 
-Mojo is faster on the dense LP and remains slower on the sparse box and
-portfolio cases. Upstream's mature sparse KKT factorization retains a
-substantial advantage when the constraint matrices contain many zeros. The
-benchmark script checks solver status and objective parity before printing a
-row.
+Mojo is faster on the dense LP and the larger box LP. It remains slower on the
+small box and portfolio cases, where upstream's mature sparse KKT factorization
+retains an advantage. The benchmark script checks solver status and objective
+parity before printing a row.
 
-No GPU path is implemented or benchmarked.
+No GPU path is implemented or benchmarked. The only compute-heavy candidate is
+factorization of the reduced system, but the benchmarked systems are at most 81
+rows and complete in well under a millisecond. GPU launch and transfer costs
+would dominate. The GPU had 12204 MiB free when assessed; no GPU workload was
+launched. CPU row parallelism was also left disabled because these row counts
+do not amortize thread launch overhead.
 
 ## How it works
 
@@ -108,13 +112,17 @@ computes residuals, Lorentz-cone Jordan products, fraction-to-boundary steps,
 and a reduced Newton system that eliminates cone directions exactly. Each
 iteration factors that system once and reuses the pivoted LU factors for the
 affine and corrected right-hand sides. SIMD covers dense row operations and
-scalar tails; large independent matrix-vector rows use a size-gated parallel
-path.
+scalar tails. Matrices with one nonzero per constraint row use indexed residual,
+Newton assembly, and direction-recovery kernels. Linear programs with that
+structure use an exact O(n) diagonal or one-border KKT solve instead of general
+LU.
 
-Python converts CSC matrices once to C-contiguous `float64` row-major arrays
-and allocates result buffers. Internal scratch is reused per thread for
-same-shaped solves. NumPy buffers cross the C ABI without a copy as integer
-addresses because exported Mojo functions cannot be parametric over pointer
-origins. The Mojo export reconstructs
+Python normally converts CSC matrices once to C-contiguous `float64` row-major
+arrays and allocates result buffers. For one-entry-per-row matrices with at
+least 10,000 dense elements, the CSC `data`, `indices`, and `indptr` NumPy
+buffers cross the FFI directly and Mojo builds indexed row metadata without a
+dense copy. Internal scratch is reused per thread for same-shaped solves. NumPy
+buffers cross the C ABI as integer addresses because exported Mojo functions
+cannot be parametric over pointer origins. The Mojo export reconstructs
 `UnsafePointer[..., AnyOrigin[mut=True]]` values and performs no allocation.
 The Python process owns every buffer for the full call.

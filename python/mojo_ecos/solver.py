@@ -17,6 +17,7 @@ from ._lib import addr, lib
 _DUMMY_FLOAT = np.zeros(1, dtype=np.float64)
 _DUMMY_MATRIX = np.zeros((1, 1), dtype=np.float64)
 _DUMMY_Q = np.zeros(1, dtype=np.int64)
+_DUMMY_I32 = np.zeros(1, dtype=np.int32)
 _WORKSPACES = threading.local()
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
 _MIN_ABI_INTEGER = -(2**63)
@@ -107,6 +108,30 @@ def _matrix(value, name: str, columns: int) -> np.ndarray:
     return dense
 
 
+def _g_matrix(value, columns: int):
+    if not sparse.issparse(value):
+        raise TypeError("G is required to be a sparse matrix")
+    if not sparse.isspmatrix_csc(value):
+        warnings.warn("Converting G to a CSC matrix; may take a while.", stacklevel=3)
+        value = value.tocsc()
+    if value.shape[1] != columns:
+        raise TypeError("Columns of A and G don't match")
+    rows = value.shape[0]
+    single_rows = (
+        rows * columns >= 10_000
+        and value.dtype == np.float64
+        and value.indices.dtype == np.int32
+        and value.nnz == rows
+        and not np.any(value.data == 0.0)
+        and np.unique(value.indices).size == rows
+    )
+    if single_rows:
+        if not np.all(np.isfinite(value.data)):
+            raise ValueError("G contains a non-finite value")
+        return _DUMMY_MATRIX, value, True
+    return _matrix(value, "G", columns), value, False
+
+
 def _integer(value, name: str) -> int:
     if isinstance(value, (bool, np.bool_)):
         raise TypeError(f"{name} must be an integer")
@@ -159,8 +184,8 @@ def solve(c, G, h, dims, A=None, b=None, **kwargs):
         g_array = _DUMMY_MATRIX
         h_array = _DUMMY_FLOAT
     else:
-        g_array = _matrix(G, "G", n)
-        m = int(g_array.shape[0])
+        g_array, g_sparse, single_rows = _g_matrix(G, n)
+        m = int(g_sparse.shape[0])
         h_array = _vector(h, "h", m)
     if l + sum(q_values) != m:
         raise ValueError(
@@ -214,6 +239,9 @@ def solve(c, G, h, dims, A=None, b=None, **kwargs):
         lib().mecos_solve(
             addr(c_array),
             addr(g_array),
+            addr(g_sparse.data if single_rows else _DUMMY_FLOAT),
+            addr(g_sparse.indices if single_rows else _DUMMY_I32),
+            addr(g_sparse.indptr if single_rows else _DUMMY_I32),
             addr(h_array),
             addr(a_array),
             addr(b_array),
@@ -239,6 +267,7 @@ def solve(c, G, h, dims, A=None, b=None, **kwargs):
             l,
             len(q_values),
             max_iters,
+            int(single_rows),
             abstol,
             reltol,
             feastol,

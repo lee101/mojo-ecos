@@ -48,6 +48,27 @@ def test_simd_tail_dimensions_match_upstream():
     assert_optimal_parity(reference, result)
 
 
+def test_zero_copy_single_entry_rows_match_upstream():
+    reference, result = run_both(*box_lp(80, 23))
+    assert_optimal_parity(reference, result)
+
+
+def test_single_entry_rows_with_one_equality_match_upstream():
+    c, G, h, dims = box_lp(9, 24)
+    A = np.ones((1, 9))
+    b = np.array([0.5])
+    reference, result = run_both(c, G, h, dims, A, b)
+    assert_optimal_parity(reference, result)
+
+
+def test_multi_entry_row_uses_dense_fallback():
+    c = np.array([-1.0, -0.5])
+    G = np.array([[1.0, 1.0], [-1.0, 0.0], [0.0, -1.0]])
+    h = np.array([1.0, 1.0, 1.0])
+    reference, result = run_both(c, G, h, {"l": 3, "q": []})
+    assert_optimal_parity(reference, result)
+
+
 def test_lp_with_equalities_matches_upstream():
     c = np.array([-3.0, 1.0, 2.0, -1.0])
     G = np.vstack((np.eye(4), -np.eye(4)))
@@ -172,7 +193,7 @@ def test_verbose_and_tolerance_options_are_applied(capsys):
     assert "mojo-ecos: Optimal solution found" in capsys.readouterr().out
 
 
-def test_large_residual_uses_parallel_threshold():
+def test_large_single_entry_setup_with_zero_iterations():
     n = 257
     c, G, h, dims = box_lp(n, 22)
     result = mojo_ecos.solve(
@@ -276,4 +297,4 @@ def test_strided_inputs_are_copied_safely():
 
 
 def test_c_abi_rejects_null_addresses_without_dereferencing():
-    assert lib().mecos_solve(*([0] * 27), 1.0, 1.0, 1.0) == -3
+    assert lib().mecos_solve(*([0] * 31), 1.0, 1.0, 1.0) == -3

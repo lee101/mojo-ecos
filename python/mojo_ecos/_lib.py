@@ -52,7 +52,7 @@ def lib() -> ctypes.CDLL:
     if _lib is None:
         _lib = ctypes.CDLL(build())
         fn = _lib.mecos_solve
-        fn.argtypes = [I] * 27 + [F, F, F]
+        fn.argtypes = [I] * 31 + [F, F, F]
         fn.restype = I
     return _lib
 

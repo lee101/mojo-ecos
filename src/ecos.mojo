@@ -9,6 +9,7 @@ from std.sys.info import simd_width_of as simdwidthof
 
 comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
+comptime I32Ptr = UnsafePointer[Int32, AnyOrigin[mut=True]]
 comptime W = simdwidthof[DType.float64]()
 
 
@@ -214,6 +215,9 @@ def residuals(
     n: Int,
     m: Int,
     p: Int,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
 ):
     var col = 0
     while col + W <= n:
@@ -222,19 +226,24 @@ def residuals(
     while col < n:
         rd[col] = c[col]
         col += 1
-    for row in range(m):
-        var scale = SIMD[DType.float64, W](z[row])
-        col = 0
-        while col + W <= n:
-            rd.store(
-                col,
-                rd.load[width=W](col)
-                + scale * g.load[width=W](row * n + col),
-            )
-            col += W
-        while col < n:
-            rd[col] += z[row] * g[row * n + col]
-            col += 1
+    if single_g:
+        for row in range(m):
+            var index = Int(row_indices[row])
+            rd[index] += z[row] * row_values[row]
+    else:
+        for row in range(m):
+            var scale = SIMD[DType.float64, W](z[row])
+            col = 0
+            while col + W <= n:
+                rd.store(
+                    col,
+                    rd.load[width=W](col)
+                    + scale * g.load[width=W](row * n + col),
+                )
+                col += W
+            while col < n:
+                rd[col] += z[row] * g[row * n + col]
+                col += 1
     for row in range(p):
         var scale = SIMD[DType.float64, W](y[row])
         col = 0
@@ -255,7 +264,13 @@ def residuals(
 
     @parameter
     def compute_rg(row: Int):
-        rg[row] = s[row] - h[row] + dot(g + row * n, x, n)
+        if single_g:
+            rg[row] = (
+                s[row] - h[row]
+                + row_values[row] * x[Int(row_indices[row])]
+            )
+        else:
+            rg[row] = s[row] - h[row] + dot(g + row * n, x, n)
 
     for row in range(p):
         compute_rp(row)
@@ -438,6 +453,9 @@ def fill_newton_linear(
     target_mu: Float64,
     use_correction: Bool,
     build_matrix: Bool,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
 ):
     var dim = n + p
     if build_matrix:
@@ -474,6 +492,15 @@ def fill_newton_linear(
         )
         rhs[dim + row] = cone_rhs
         var inverse_s = 1.0 / s[row]
+        if single_g:
+            var index = Int(row_indices[row])
+            var value = row_values[row]
+            rhs[index] -= cone_rhs * inverse_s * value
+            if build_matrix:
+                matrix[index * dim + index] += (
+                    z[row] * inverse_s * value * value
+                )
+            continue
         var rhs_scale = SIMD[DType.float64, W](cone_rhs * inverse_s)
         col = 0
         while col + W <= n:
@@ -518,12 +545,21 @@ def recover_dz_linear(
     dz: Ptr,
     n: Int,
     m: Int,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
 ):
     @parameter
     def compute_row(row: Int):
-        dz[row] = (
-            cone_rhs[row] + z[row] * dot(g + row * n, dx, n)
-        ) / s[row]
+        if single_g:
+            dz[row] = (
+                cone_rhs[row]
+                + z[row] * row_values[row] * dx[Int(row_indices[row])]
+            ) / s[row]
+        else:
+            dz[row] = (
+                cone_rhs[row] + z[row] * dot(g + row * n, dx, n)
+            ) / s[row]
 
     for row in range(m):
         compute_row(row)
@@ -573,6 +609,9 @@ def fill_newton_reduced_soc(
     target_mu: Float64,
     use_correction: Bool,
     build_matrix: Bool,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
 ):
     var dim = n + p
     var work = matrix + dim * dim
@@ -611,6 +650,15 @@ def fill_newton_reduced_soc(
         )
         rhs[dim + row] = cone_rhs
         var inverse_s = 1.0 / s[row]
+        if single_g:
+            var index = Int(row_indices[row])
+            var value = row_values[row]
+            rhs[index] -= cone_rhs * inverse_s * value
+            if build_matrix:
+                matrix[index * dim + index] += (
+                    z[row] * inverse_s * value * value
+                )
+            continue
         var rhs_scale = SIMD[DType.float64, W](cone_rhs * inverse_s)
         col = 0
         while col + W <= n:
@@ -666,19 +714,25 @@ def fill_newton_reduced_soc(
             )
 
         lorentz_solve(s + offset, raw, work, size)
-        for j in range(size):
-            var scale = SIMD[DType.float64, W](work[j])
-            col = 0
-            while col + W <= n:
-                rhs.store(
-                    col,
-                    rhs.load[width=W](col)
-                    - scale * g.load[width=W]((offset + j) * n + col),
+        if single_g:
+            for j in range(size):
+                rhs[Int(row_indices[offset + j])] -= (
+                    work[j] * row_values[offset + j]
                 )
-                col += W
-            while col < n:
-                rhs[col] -= work[j] * g[(offset + j) * n + col]
-                col += 1
+        else:
+            for j in range(size):
+                var scale = SIMD[DType.float64, W](work[j])
+                col = 0
+                while col + W <= n:
+                    rhs.store(
+                        col,
+                        rhs.load[width=W](col)
+                        - scale * g.load[width=W]((offset + j) * n + col),
+                    )
+                    col += W
+                while col < n:
+                    rhs[col] -= work[j] * g[(offset + j) * n + col]
+                    col += 1
 
         if build_matrix:
             var determinant = (
@@ -689,6 +743,29 @@ def fill_newton_reduced_soc(
             var z0 = SIMD[DType.float64, W](z[offset])
             var determinants = SIMD[DType.float64, W](determinant)
             var right = 0
+            if single_g:
+                while right < n:
+                    var g0 = (
+                        row_values[offset]
+                        if Int(row_indices[offset]) == right else 0.0
+                    )
+                    var product_scalar = z[offset] * g0
+                    for j in range(1, size):
+                        var gj = (
+                            row_values[offset + j]
+                            if Int(row_indices[offset + j]) == right else 0.0
+                        )
+                        product_scalar += z[offset + j] * gj
+                        product[j] = (
+                            z[offset + j] * g0 + z[offset] * gj
+                        )
+                    product[0] = product_scalar
+                    lorentz_solve(s + offset, product, work, size)
+                    for j in range(size):
+                        matrix[
+                            Int(row_indices[offset + j]) * dim + right
+                        ] += row_values[offset + j] * work[j]
+                    right += 1
             while right + W <= n:
                 var g0 = g.load[width=W](offset * n + right)
                 var product_scalar = z0 * g0
@@ -773,17 +850,32 @@ def recover_dz_soc(
     m: Int,
     l: Int,
     nq: Int,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
 ):
     for row in range(l):
-        dz[row] = (
-            raw[row] + z[row] * dot(g + row * n, dx, n)
-        ) / s[row]
+        if single_g:
+            dz[row] = (
+                raw[row]
+                + z[row] * row_values[row] * dx[Int(row_indices[row])]
+            ) / s[row]
+        else:
+            dz[row] = (
+                raw[row] + z[row] * dot(g + row * n, dx, n)
+            ) / s[row]
     var product = work + m
     var offset = l
     for cone in range(nq):
         var size = Int(q[cone])
         for j in range(size):
-            work[offset + j] = dot(g + (offset + j) * n, dx, n)
+            if single_g:
+                work[offset + j] = (
+                    row_values[offset + j]
+                    * dx[Int(row_indices[offset + j])]
+                )
+            else:
+                work[offset + j] = dot(g + (offset + j) * n, dx, n)
         var product_scalar = z[offset] * work[offset]
         for j in range(1, size):
             product_scalar += z[offset + j] * work[offset + j]
@@ -796,6 +888,42 @@ def recover_dz_soc(
             product[j] += raw[offset + j]
         lorentz_solve(s + offset, product, dz + offset, size)
         offset += size
+
+
+def solve_diagonal_kkt(
+    matrix: Ptr,
+    rhs: Ptr,
+    solution: Ptr,
+    n: Int,
+    p: Int,
+) -> Bool:
+    var dim = n + p
+    if p == 0:
+        for i in range(n):
+            var diagonal = matrix[i * dim + i]
+            if abs(diagonal) < 1e-13:
+                return False
+            solution[i] = rhs[i] / diagonal
+        return True
+
+    var numerator = -rhs[n]
+    var denominator = 0.0
+    for i in range(n):
+        var diagonal = matrix[i * dim + i]
+        if abs(diagonal) < 1e-13:
+            return False
+        var equality = matrix[n * dim + i]
+        numerator += equality * rhs[i] / diagonal
+        denominator += equality * equality / diagonal
+    if abs(denominator) < 1e-13:
+        return False
+    var dual = numerator / denominator
+    solution[n] = dual
+    for i in range(n):
+        solution[i] = (
+            rhs[i] - matrix[i * dim + n] * dual
+        ) / matrix[i * dim + i]
+    return True
 
 
 def gaussian_factor(matrix: Ptr, pivots: IPtr, dim: Int) -> Bool:
@@ -897,10 +1025,26 @@ def gaussian_solve_factored(
         solution[row] = value / matrix[row * dim + row]
 
 
-def recover_ds(g: Ptr, rg: Ptr, dx: Ptr, ds: Ptr, n: Int, m: Int):
+def recover_ds(
+    g: Ptr,
+    rg: Ptr,
+    dx: Ptr,
+    ds: Ptr,
+    n: Int,
+    m: Int,
+    single_g: Bool,
+    row_indices: Ptr,
+    row_values: Ptr,
+):
     @parameter
     def compute_row(row: Int):
-        ds[row] = -rg[row] - dot(g + row * n, dx, n)
+        if single_g:
+            ds[row] = (
+                -rg[row]
+                - row_values[row] * dx[Int(row_indices[row])]
+            )
+        else:
+            ds[row] = -rg[row] - dot(g + row * n, dx, n)
 
     for row in range(m):
         compute_row(row)
@@ -909,6 +1053,9 @@ def recover_ds(g: Ptr, rg: Ptr, dx: Ptr, ds: Ptr, n: Int, m: Int):
 def solve_impl(
     c: Ptr,
     g: Ptr,
+    g_values: Ptr,
+    g_indices: I32Ptr,
+    g_indptr: I32Ptr,
     h: Ptr,
     a: Ptr,
     b: Ptr,
@@ -934,6 +1081,7 @@ def solve_impl(
     l: Int,
     nq: Int,
     max_iters: Int,
+    direct_single_g: Bool,
     abstol: Float64,
     reltol: Float64,
     feastol: Float64,
@@ -943,6 +1091,36 @@ def solve_impl(
     var degree = l + 2 * nq
     if degree <= 0:
         return -2
+    var row_indices = matrix + linear_dim * linear_dim + 2 * m * W
+    var row_values = row_indices + m
+    var single_g = direct_single_g
+    if direct_single_g:
+        for col in range(n):
+            var start = Int(g_indptr[col])
+            var stop = Int(g_indptr[col + 1])
+            for position in range(start, stop):
+                var row = Int(g_indices[position])
+                row_indices[row] = Float64(col)
+                row_values[row] = g_values[position]
+    else:
+        single_g = True
+        for row in range(m):
+            var found = -1
+            var value = 0.0
+            for col in range(n):
+                if g[row * n + col] != 0.0:
+                    if found != -1:
+                        single_g = False
+                        break
+                    found = col
+                    value = g[row * n + col]
+            if not single_g:
+                break
+            if found == -1:
+                single_g = False
+                break
+            row_indices[row] = Float64(found)
+            row_values[row] = value
 
     var zeros = SIMD[DType.float64, W](0.0)
     var i = 0
@@ -969,7 +1147,10 @@ def solve_impl(
     var completed = 0
 
     for iteration in range(max_iters + 1):
-        residuals(c, g, h, a, b, x, y, z, s, rd, rp, rg, n, m, p)
+        residuals(
+            c, g, h, a, b, x, y, z, s, rd, rp, rg, n, m, p,
+            single_g, row_indices, row_values,
+        )
         var primal_residual = max(norm_inf(rp, p) / bscale, norm_inf(rg, m) / hscale)
         var dual_residual = norm_inf(rd, n) / cscale
         var gap = cone_dot(s, z, m)
@@ -998,22 +1179,33 @@ def solve_impl(
             fill_newton_linear(
                 g, a, s, z, rd, rp, rg, correction, matrix, rhs,
                 n, m, p, 0.0, False, True,
+                single_g, row_indices, row_values,
             )
-            if not gaussian_factor(matrix, pivots, linear_dim):
-                status = -2
-                completed = iteration
-                break
-            gaussian_solve_factored(
-                matrix, pivots, rhs, direction, linear_dim
-            )
+            if single_g and p <= 1:
+                if not solve_diagonal_kkt(
+                    matrix, rhs, direction, n, p
+                ):
+                    status = -2
+                    completed = iteration
+                    break
+            else:
+                if not gaussian_factor(matrix, pivots, linear_dim):
+                    status = -2
+                    completed = iteration
+                    break
+                gaussian_solve_factored(
+                    matrix, pivots, rhs, direction, linear_dim
+                )
             recover_dz_linear(
                 g, s, z, rhs + linear_dim, direction,
                 direction + n + p, n, m,
+                single_g, row_indices, row_values,
             )
         else:
             fill_newton_reduced_soc(
                 g, a, s, z, rd, rp, rg, correction, matrix, rhs, q,
                 n, m, p, l, nq, 0.0, False, True,
+                single_g, row_indices, row_values,
             )
             if not gaussian_factor(matrix, pivots, linear_dim):
                 status = -2
@@ -1026,8 +1218,12 @@ def solve_impl(
                 g, s, z, rhs + linear_dim, q,
                 matrix + linear_dim * linear_dim,
                 direction, direction + n + p, n, m, l, nq,
+                single_g, row_indices, row_values,
             )
-        recover_ds(g, rg, direction, ds_aff, n, m)
+        recover_ds(
+            g, rg, direction, ds_aff, n, m,
+            single_g, row_indices, row_values,
+        )
         i = 0
         while i + W <= m:
             dz_aff.store(i, direction.load[width=W](n + p + i))
@@ -1066,18 +1262,29 @@ def solve_impl(
             fill_newton_linear(
                 g, a, s, z, rd, rp, rg, correction, matrix, rhs,
                 n, m, p, sigma * mu, True, False,
+                single_g, row_indices, row_values,
             )
-            gaussian_solve_factored(
-                matrix, pivots, rhs, direction, linear_dim
-            )
+            if single_g and p <= 1:
+                if not solve_diagonal_kkt(
+                    matrix, rhs, direction, n, p
+                ):
+                    status = -2
+                    completed = iteration
+                    break
+            else:
+                gaussian_solve_factored(
+                    matrix, pivots, rhs, direction, linear_dim
+                )
             recover_dz_linear(
                 g, s, z, rhs + linear_dim, direction,
                 direction + n + p, n, m,
+                single_g, row_indices, row_values,
             )
         else:
             fill_newton_reduced_soc(
                 g, a, s, z, rd, rp, rg, correction, matrix, rhs, q,
                 n, m, p, l, nq, sigma * mu, True, False,
+                single_g, row_indices, row_values,
             )
             gaussian_solve_factored(
                 matrix, pivots, rhs, direction, linear_dim
@@ -1086,8 +1293,12 @@ def solve_impl(
                 g, s, z, rhs + linear_dim, q,
                 matrix + linear_dim * linear_dim,
                 direction, direction + n + p, n, m, l, nq,
+                single_g, row_indices, row_values,
             )
-        recover_ds(g, rg, direction, rhs, n, m)
+        recover_ds(
+            g, rg, direction, rhs, n, m,
+            single_g, row_indices, row_values,
+        )
 
         var alpha_p = min(1.0, 0.99 * cone_step(s, rhs, l, q, nq))
         var alpha_d = min(
@@ -1146,6 +1357,9 @@ def solve_impl(
 def mecos_solve(
     c_addr: Int,
     g_addr: Int,
+    g_values_addr: Int,
+    g_indices_addr: Int,
+    g_indptr_addr: Int,
     h_addr: Int,
     a_addr: Int,
     b_addr: Int,
@@ -1171,12 +1385,15 @@ def mecos_solve(
     l: Int,
     nq: Int,
     max_iters: Int,
+    single_g: Int,
     abstol: Float64,
     reltol: Float64,
     feastol: Float64,
 ) abi("C") -> Int:
     if (
-        c_addr == 0 or g_addr == 0 or h_addr == 0 or a_addr == 0
+        c_addr == 0 or g_addr == 0 or g_values_addr == 0
+        or g_indices_addr == 0 or g_indptr_addr == 0
+        or h_addr == 0 or a_addr == 0
         or b_addr == 0 or q_addr == 0 or pivots_addr == 0
         or x_addr == 0 or y_addr == 0 or z_addr == 0 or s_addr == 0
         or matrix_addr == 0 or rhs_addr == 0 or direction_addr == 0
@@ -1184,7 +1401,7 @@ def mecos_solve(
         or rp_addr == 0 or rg_addr == 0 or correction_addr == 0
         or stats_addr == 0
         or n <= 0 or m <= 0 or p < 0 or l < 0 or nq < 0
-        or max_iters < 0 or l > m
+        or max_iters < 0 or l > m or (single_g != 0 and single_g != 1)
     ):
         return -3
     var q_pointer = IPtr(unsafe_from_address=q_addr)
@@ -1199,6 +1416,9 @@ def mecos_solve(
     return solve_impl(
         Ptr(unsafe_from_address=c_addr),
         Ptr(unsafe_from_address=g_addr),
+        Ptr(unsafe_from_address=g_values_addr),
+        I32Ptr(unsafe_from_address=g_indices_addr),
+        I32Ptr(unsafe_from_address=g_indptr_addr),
         Ptr(unsafe_from_address=h_addr),
         Ptr(unsafe_from_address=a_addr),
         Ptr(unsafe_from_address=b_addr),
@@ -1218,5 +1438,6 @@ def mecos_solve(
         Ptr(unsafe_from_address=rg_addr),
         Ptr(unsafe_from_address=correction_addr),
         Ptr(unsafe_from_address=stats_addr),
-        n, m, p, l, nq, max_iters, abstol, reltol, feastol,
+        n, m, p, l, nq, max_iters, single_g == 1,
+        abstol, reltol, feastol,
     )
