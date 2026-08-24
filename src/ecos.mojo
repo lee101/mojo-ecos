@@ -4,16 +4,12 @@ The solver uses the Euclidean Jordan algebra of the nonnegative and Lorentz
 cones. All storage is owned by the caller; matrices are row-major float64.
 """
 
-from std.algorithm.functional import parallelize
 from std.math import abs, sqrt
 from std.sys.info import simd_width_of as simdwidthof
 
 comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime W = simdwidthof[DType.float64]()
-comptime PARALLEL_MATVEC_WORK = 131072
-comptime PARALLEL_ELIMINATION_WORK = 1048576
-comptime PARALLEL_WORKERS = 16
 
 
 def norm_inf(x: Ptr, n: Int) -> Float64:
@@ -261,16 +257,10 @@ def residuals(
     def compute_rg(row: Int):
         rg[row] = s[row] - h[row] + dot(g + row * n, x, n)
 
-    if p * n >= PARALLEL_MATVEC_WORK:
-        parallelize[compute_rp](p, PARALLEL_WORKERS)
-    else:
-        for row in range(p):
-            compute_rp(row)
-    if m * n >= PARALLEL_MATVEC_WORK:
-        parallelize[compute_rg](m, PARALLEL_WORKERS)
-    else:
-        for row in range(m):
-            compute_rg(row)
+    for row in range(p):
+        compute_rp(row)
+    for row in range(m):
+        compute_rg(row)
 
 
 def fill_newton(
@@ -535,11 +525,8 @@ def recover_dz_linear(
             cone_rhs[row] + z[row] * dot(g + row * n, dx, n)
         ) / s[row]
 
-    if m * n >= PARALLEL_MATVEC_WORK:
-        parallelize[compute_row](m, PARALLEL_WORKERS)
-    else:
-        for row in range(m):
-            compute_row(row)
+    for row in range(m):
+        compute_row(row)
 
 
 def lorentz_solve(s: Ptr, value: Ptr, result: Ptr, size: Int):
@@ -859,16 +846,8 @@ def gaussian_factor(matrix: Ptr, pivots: IPtr, dim: Int) -> Bool:
                     matrix[row * dim + col] -= factor * matrix[pivot * dim + col]
                     col += 1
 
-        var remaining = dim - pivot - 1
-        if remaining * remaining >= PARALLEL_ELIMINATION_WORK:
-            @parameter
-            def eliminate_offset(index: Int):
-                eliminate(pivot + 1 + index)
-
-            parallelize[eliminate_offset](remaining, PARALLEL_WORKERS)
-        else:
-            for row in range(pivot + 1, dim):
-                eliminate(row)
+        for row in range(pivot + 1, dim):
+            eliminate(row)
     return True
 
 
@@ -923,11 +902,8 @@ def recover_ds(g: Ptr, rg: Ptr, dx: Ptr, ds: Ptr, n: Int, m: Int):
     def compute_row(row: Int):
         ds[row] = -rg[row] - dot(g + row * n, dx, n)
 
-    if m * n >= PARALLEL_MATVEC_WORK:
-        parallelize[compute_row](m, PARALLEL_WORKERS)
-    else:
-        for row in range(m):
-            compute_row(row)
+    for row in range(m):
+        compute_row(row)
 
 
 def solve_impl(
