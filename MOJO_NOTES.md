@@ -169,6 +169,24 @@ threshold.
 `DeviceContext()` construction needs a `raises` context, the value is not
 `Writable` (do not `print` it), and there is no `ctx.devices()`.
 
+**Kernel-side names on 26.7.0 (checked by compiling, 2026-11):**
+
+- `block_idx` / `thread_idx` are **values**, not callables. `block_idx(0)` is a
+  parse error (`expected argument name`). Read `.x`, `.y`, `.z`.
+- `DeviceBuffer[DType.float64]` lives in `max.gpu.host`, not `max.gpu`.
+- A `DeviceBuffer` has no `__getitem__`/`__setitem__` and no `unsafe_store`.
+  Take `var p = buf.unsafe_ptr()` and index `p[i]`; `.load`/`.store` reject the
+  width arguments used in section 3.
+- The thin-kernel launch that works from a shared library is
+  `ctx.enqueue_function[kernel](dbuf0, dbuf1, Int64(n), grid_dim=(gx, gy), block_dim=(tx, ty))`
+  with `def kernel(a: FPtr, b: FPtr, dst: FPtr, n_value: Int64)`, `FPtr` being
+  `UnsafePointer[Float64, AnyOrigin[mut=True]]`. Host arguments must be
+  `RegisterPassable` (e.g. `Int64`), so pass sizes as `Int64`.
+- `out` is a reserved word: a kernel parameter named `out` fails with a confusing
+  `expected argument name` at the next parameter.
+- A working, measured end-to-end reference for this exact pin is
+  `mojo-numba/src/gpu.mojo` with `python/mojo_numba/_gpu.py`.
+
 One trap worth naming: `max`'s caching memory allocator can request a very large
 chunk (mojo-eigen's batched GPU SVD asks for 16.75 GiB and gets
 `CUDA_ERROR_OUT_OF_MEMORY`) and a broad `except` will swallow that into a silent

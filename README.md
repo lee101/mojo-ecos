@@ -98,11 +98,52 @@ small box and portfolio cases, where upstream's mature sparse KKT factorization
 retains an advantage. The benchmark script checks solver status and objective
 parity before printing a row.
 
-No GPU path is implemented or benchmarked. The only compute-heavy candidate is
-factorization of the reduced system, but the benchmarked systems are at most 81
-rows and complete in well under a millisecond. GPU launch and transfer costs
-would dominate. The GPU had 12204 MiB free when assessed; no GPU workload was
-launched.
+### GPU path: gated out, not shipped
+
+The phase gate asks for kernels above roughly 2 flops per byte. None qualify:
+
+- `src/ecos.mojo` has no matrix-multiply-shaped kernel. The dense Newton
+  system is assembled by accumulated rank-one terms and solved by a dense LU,
+  and both update one element with one fused multiply-add. The reduction,
+  indexed single-G, diagonal-solve, and SOCP recovery kernels are pure
+  streaming. The full per-kernel table is in `bench/analysis.md`; the ceilings
+  are 2 flops/byte (LU, triangular solve, rank-one assembly) and about 1
+  (everything else).
+- To check what a GPU path could buy anyway, `bench/gpu_probe.py` measures one
+  launch of the cheapest reference kernel (16x16 tiled matmul: copy in, one
+  launch, copy out) against the CPU. On this host the round trip costs about
+  0.1-2.5 ms when small and 37 ms for 100 MB, and the shipped kernels run in
+  1-212 us per call at the benchmark sizes.
+- The gate was also checked for the device: `nvidia-smi --query-gpu=memory.free`
+  reported 5203 MiB free before the phase (an RTX 5090 shared with other
+  tenants), above the 4000 MiB floor, and 3907-3597 MiB while the probe ran.
+  Problems larger than any benchmark case (`n=1024`, `n=2048`) were measured
+  once for order of magnitude; see `bench/analysis.md`.
+
+The summary above says the solver is memory-bound at the kernel level, and the gate
+requires that verdict to be stated here. Per `src/ecos.mojo` and
+`bench/analysis.md`: **CPU only: memory-bound** for the LU, triangular solve,
+rank-one Newton assembly, residual and recovery kernels (at most 2 flops per
+byte, about 1 for the streaming kernels). The only kernel that is not
+memory-bound at that ceiling is the SOCP reduced-system fill, whose G traffic
+grows with `n * cone size`, and it is still under 2 flops per byte.
+
+Before/after end-to-end medians from `pixi run bench`, same machine and host load
+as the table above (before: 0.135 / 0.222 / 0.458 / 0.358 / 0.639 ms):
+
+| Problem | before | after (unchanged solver) |
+|---|---:|---:|
+| box LP, n=30 / m=60 | 0.135 ms | 0.138 ms |
+| box LP, n=80 / m=160 | 0.222 ms | 0.208 ms |
+| dense LP, n=30 / m=90 | 0.458 ms | 0.457 ms |
+| portfolio SOCP, n=20 | 0.358 ms | 0.365 ms |
+| portfolio SOCP, n=40 | 0.639 ms | 0.670 ms |
+
+The code is byte-identical between the two runs, so these deltas are host noise.
+No GPU kernel ships, so nothing in the suite is gated on a device and none is
+skipped: `pixi run test` runs all 40 parity tests on CPU. A GPU path could only
+pay off for a matrix-multiply-shaped kernel at `n` in the hundreds, which this
+solver does not have.
 
 ### CPU parallelism: measured, then not shipped
 
