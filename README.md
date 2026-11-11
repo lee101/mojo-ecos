@@ -102,8 +102,85 @@ No GPU path is implemented or benchmarked. The only compute-heavy candidate is
 factorization of the reduced system, but the benchmarked systems are at most 81
 rows and complete in well under a millisecond. GPU launch and transfer costs
 would dominate. The GPU had 12204 MiB free when assessed; no GPU workload was
-launched. CPU row parallelism was also left disabled because these row counts
-do not amortize thread launch overhead.
+launched.
+
+### CPU parallelism: measured, then not shipped
+
+A parallel phase was attempted on `parallelize` from `max.algorithm` (the only
+form that compiles on the pinned 1.2.0 toolchain; `std.algorithm` and
+`std.threading` do not). It was prototyped behind a size threshold on the
+solver's per-iteration row kernels (residual and `recover_ds` row dots, dense
+Newton assembly, LU factorization) and measured before being wired in. It lost
+on every shape real callers pass, so the solver in `src/ecos.mojo` is still
+serial and contains no `parallelize` call. The numbers below are from this host
+(shared; load average 26-32 during measurement, Intel Xeon E5-2697 v4, 72
+logical CPUs, AVX2 only).
+
+Per-kernel worker ladder, 1 / 2 / 4 / 8 workers, total work fixed at 60M
+flops, minimum of 3-11 samples per point:
+
+| Kernel | Work shape | w=1 | w=2 | w=4 | w=8 |
+|---|---|---:|---:|---:|---:|
+| row dot, one row per work item | 40,000 rows x 1,500 floats | 55-66 ms | 44-62 ms | 29-41 ms | not run |
+| row dot, degenerate | 1 row x 40M floats | 63.3 ms | 92.1 ms | 87.7 ms | 87.5 ms |
+| row dot, degenerate | 1 row x 400M floats | 609.9 ms | 615.7 ms | 627.3 ms | 635.3 ms |
+
+Interpretation:
+
+- Fan-out only helps when each work item is large. The one shape that gains is
+  40,000 independent 1,500-float rows at 4 workers: roughly 1.6-2.2x, below the
+  4x ideal, and not measured at 8 workers.
+- A fixed 60M-flop budget spread over many small rows is still traffic-bound.
+  Even in the best case, the 4-worker column is a range because the shared host
+  moves it; it does not scale linearly.
+- With one giant contiguous row the parallel path is flat at best and 0.9-1.5x
+  slower at 2-8 workers. In that degenerate shape there is only one work item,
+  so `parallelize` has almost nothing to divide.
+- Probe side effect: 2 of roughly 70 harness runs of a 40,000-row body segfaulted
+  after entering `parallelize`. The crash reporter fired too, so we cannot tell
+  whether the fault was in the kernel or the runtime's signal handling. That
+  matters here because the shared library is called from Python threads and
+  already spawns its runtime there; an intermittent crash in a solver is
+  unacceptable.
+- The 8-worker column was measured only where listed. It never beat 4, which is
+  consistent with the 4-worker cap but does not by itself prove one.
+
+A parallel path that is flat-to-negative at caller sizes and can crash the
+process is worse than no parallelism, so it was reverted.
+
+The solver-time equivalent makes the same point. Dense LP `n=200`, 13
+iterations, each kernel measured on its own at caller sizes: row-dot residual
+1-8 us, LU factorization of the reduced system 16-132 us, one triangular solve
+4-38 us. Even parallelising the entire factorization 4x would save about 0.1 ms
+of a 26 ms solve, which is inside this host's run-to-run noise. End-to-end dense
+LP `n=200` medians by the runtime's thread count (`MOJO_MAX_THREADS`), two runs
+each: 1 worker 27.6 / 38.7 ms, 2 workers 28.1 / 27.3 ms, 4 workers 36.6 /
+28.7 ms, 8 workers 25.8 / 28.2 ms. The spreads overlap and reproduce with no
+thread setting, so this experiment cannot separate solver parallelism from host
+noise; that is itself the argument for not threading it. The 5 ms launch cost
+above was measured once at a fixed iteration count, and it also exceeds the
+whole cost of any one kernel at these sizes.
+
+Why the threshold decision stands even without threading the solver:
+
+- Every kernel at the sizes the benchmark uses (`box LP n=80`, `dense LP n=30`,
+  `portfolio n=20/40`) finishes in 1-25 us, at least an order of magnitude
+  below one launch's overhead, so no crossover point is reachable from these
+  callers. Measured before/after end-to-end medians on this host are
+  0.141 / 0.147 ms (box LP n=30), 0.226 / 0.250 ms (box LP n=80), 0.467 /
+  0.522-0.551 ms (dense LP n=30), 0.364 / 0.405 ms (portfolio n=20), 0.665 /
+  0.730 ms (portfolio n=40). `src/ecos.mojo` is byte-identical to the version
+  measured before the phase, so these deltas are host load, not a code change;
+  the same spread reappears between two back-to-back "after" runs.
+- The only size range where a parallel row-dot wins is thousands of
+  *independent*, multi-hundred-float rows. At that scale the dense problem has
+  lost its reason for existing, so no threshold can be justified from these
+  callers.
+
+`max` was added to `pixi.toml` with the pinned release
+(`max ==26.7.0.dev2026092605`) so the `max.*` module resolves for anyone
+rebuilding the port with a parallel or GPU path; the solver itself needs
+nothing from it.
 
 ## How it works
 
