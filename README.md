@@ -83,20 +83,24 @@ receive the same SciPy matrices, and input conversion and result construction
 are included. A speedup below `1.00x` means Mojo is slower.
 
 Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz, 72 logical CPUs.
-Platform: Linux 6.8.0-136-generic x86_64, glibc 2.39. Reference: ECOS 2.0.14.
+Platform: Linux 6.8.0-147-generic x86_64, glibc 2.39. Reference: ECOS 2.0.14.
 
 | Problem | mojo-ecos | upstream ECOS | Mojo speedup |
 |---|---:|---:|---:|
-| box LP, n=30 / m=60 | 0.130 ms | 0.100 ms | 0.77x |
-| box LP, n=80 / m=160 | 0.196 ms | 0.257 ms | 1.31x |
-| dense LP, n=30 / m=90 | 0.473 ms | 0.823 ms | 1.74x |
-| portfolio SOCP, n=20 | 0.350 ms | 0.187 ms | 0.53x |
-| portfolio SOCP, n=40 | 0.647 ms | 0.339 ms | 0.52x |
+| box LP, n=30 / m=60 | 0.137 ms | 0.109 ms | 0.80x |
+| box LP, n=80 / m=160 | 0.221 ms | 0.256 ms | 1.16x |
+| dense LP, n=30 / m=90 | 0.468 ms | 0.908 ms | 1.94x |
+| portfolio SOCP, n=20 | 0.358 ms | 0.207 ms | 0.58x |
+| portfolio SOCP, n=40 | 0.656 ms | 0.370 ms | 0.56x |
 
-Mojo is faster on the dense LP and the larger box LP. It remains slower on the
-small box and portfolio cases, where upstream's mature sparse KKT factorization
-retains an advantage. The benchmark script checks solver status and objective
-parity before printing a row.
+Each column is the median of 10 `pixi run bench` runs in one verify session
+(2026-11-11) on a shared host (load average 17-20); per-run values and spreads
+are in `bench/verify.md`. Mojo is still faster on the dense LP and the larger
+box LP. It remains slower on the small box and portfolio cases, where
+upstream's mature sparse KKT factorization retains an advantage. The benchmark
+script checks solver status and objective parity before printing a row; both
+sides run to convergence (`exitFlag == 0`) with the same iteration counts up to
+one iteration, so neither side skips a solve.
 
 ### GPU path: gated out, not shipped
 
@@ -128,18 +132,10 @@ byte, about 1 for the streaming kernels). The only kernel that is not
 memory-bound at that ceiling is the SOCP reduced-system fill, whose G traffic
 grows with `n * cone size`, and it is still under 2 flops per byte.
 
-Before/after end-to-end medians from `pixi run bench`, same machine and host load
-as the table above (before: 0.135 / 0.222 / 0.458 / 0.358 / 0.639 ms):
-
-| Problem | before | after (unchanged solver) |
-|---|---:|---:|
-| box LP, n=30 / m=60 | 0.135 ms | 0.138 ms |
-| box LP, n=80 / m=160 | 0.222 ms | 0.208 ms |
-| dense LP, n=30 / m=90 | 0.458 ms | 0.457 ms |
-| portfolio SOCP, n=20 | 0.358 ms | 0.365 ms |
-| portfolio SOCP, n=40 | 0.639 ms | 0.670 ms |
-
-The code is byte-identical between the two runs, so these deltas are host noise.
+The "before/after" table the earlier phases published has been removed: nothing
+in `src/ecos.mojo` changed, so both of its columns were the same code measured
+twice, and its numbers differ from this session's only by host noise. The
+per-run spreads that establish that are in `bench/verify.md`.
 No GPU kernel ships, so nothing in the suite is gated on a device and none is
 skipped: `pixi run test` runs all 40 parity tests on CPU. A GPU path could only
 pay off for a matrix-multiply-shaped kernel at `n` in the hundreds, which this
@@ -193,12 +189,12 @@ The solver-time equivalent makes the same point. Dense LP `n=200`, 13
 iterations, each kernel measured on its own at caller sizes: row-dot residual
 1-8 us, LU factorization of the reduced system 16-132 us, one triangular solve
 4-38 us. Even parallelising the entire factorization 4x would save about 0.1 ms
-of a 26 ms solve, which is inside this host's run-to-run noise. End-to-end dense
-LP `n=200` medians by the runtime's thread count (`MOJO_MAX_THREADS`), two runs
-each: 1 worker 27.6 / 38.7 ms, 2 workers 28.1 / 27.3 ms, 4 workers 36.6 /
-28.7 ms, 8 workers 25.8 / 28.2 ms. The spreads overlap and reproduce with no
-thread setting, so this experiment cannot separate solver parallelism from host
-noise; that is itself the argument for not threading it. The 5 ms launch cost
+of a 26 ms solve, which is inside this host's run-to-run noise. The dense LP
+`n=200` "medians by thread count" figures an earlier phase reported are no
+longer quoted here: `MOJO_MAX_THREADS` appears nowhere in this repository or in
+the solve path, so the verify session could not reproduce a thread-count sweep,
+and the reported ranges overlapped regardless. If that experiment is redone it
+needs a documented way to set the runtime's worker count. The 5 ms launch cost
 above was measured once at a fixed iteration count, and it also exceeds the
 whole cost of any one kernel at these sizes.
 
@@ -207,12 +203,10 @@ Why the threshold decision stands even without threading the solver:
 - Every kernel at the sizes the benchmark uses (`box LP n=80`, `dense LP n=30`,
   `portfolio n=20/40`) finishes in 1-25 us, at least an order of magnitude
   below one launch's overhead, so no crossover point is reachable from these
-  callers. Measured before/after end-to-end medians on this host are
-  0.141 / 0.147 ms (box LP n=30), 0.226 / 0.250 ms (box LP n=80), 0.467 /
-  0.522-0.551 ms (dense LP n=30), 0.364 / 0.405 ms (portfolio n=20), 0.665 /
-  0.730 ms (portfolio n=40). `src/ecos.mojo` is byte-identical to the version
-  measured before the phase, so these deltas are host load, not a code change;
-  the same spread reappears between two back-to-back "after" runs.
+  callers. The verify-session run-to-run spreads for these shapes single-
+  threaded (0.132-0.162 ms for box LP n=30 through 0.635-0.771 ms for
+  portfolio n=40, ten runs each) are in `bench/verify.md`; they are host load,
+  since no solver code changed between the phases that produced them.
 - The only size range where a parallel row-dot wins is thousands of
   *independent*, multi-hundred-float rows. At that scale the dense problem has
   lost its reason for existing, so no threshold can be justified from these
