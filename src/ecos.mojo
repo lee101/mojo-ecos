@@ -17,7 +17,7 @@ def norm_inf(x: Ptr, n: Int) -> Float64:
     var values = SIMD[DType.float64, W](0.0)
     var i = 0
     while i + W <= n:
-        values = max(values, abs(x.load[width=W](i)))
+        values = max(values, abs(x.unsafe_load[width=W](i)))
         i += W
     var value = values.reduce_max()
     while i < n:
@@ -30,7 +30,7 @@ def dot(x: Ptr, y: Ptr, n: Int) -> Float64:
     var values = SIMD[DType.float64, W](0.0)
     var i = 0
     while i + W <= n:
-        values += x.load[width=W](i) * y.load[width=W](i)
+        values += x.unsafe_load[width=W](i) * y.unsafe_load[width=W](i)
         i += W
     var value = values.reduce_add()
     while i < n:
@@ -72,7 +72,7 @@ def cone_product(a: Ptr, b: Ptr, dst: Ptr, l: Int, q: IPtr, nq: Int):
     while i + W <= l:
         dst.store(
             i,
-            a.load[width=W](i) * b.load[width=W](i),
+            a.unsafe_load[width=W](i) * b.unsafe_load[width=W](i),
         )
         i += W
     while i < l:
@@ -85,8 +85,8 @@ def cone_product(a: Ptr, b: Ptr, dst: Ptr, l: Int, q: IPtr, nq: Int):
         var j = 1
         while j + W <= size:
             products += (
-                a.load[width=W](offset + j)
-                * b.load[width=W](offset + j)
+                a.unsafe_load[width=W](offset + j)
+                * b.unsafe_load[width=W](offset + j)
             )
             j += W
         var scalar = a[offset] * b[offset] + products.reduce_add()
@@ -100,8 +100,8 @@ def cone_product(a: Ptr, b: Ptr, dst: Ptr, l: Int, q: IPtr, nq: Int):
         while j + W <= size:
             dst.store(
                 offset + j,
-                a0 * b.load[width=W](offset + j)
-                + b0 * a.load[width=W](offset + j),
+                a0 * b.unsafe_load[width=W](offset + j)
+                + b0 * a.unsafe_load[width=W](offset + j),
             )
             j += W
         while j < size:
@@ -144,9 +144,9 @@ def cone_step(x: Ptr, dx: Ptr, l: Int, q: IPtr, nq: Int) -> Float64:
         var j = 1
         while j + W <= size:
             var values = (
-                x.load[width=W](offset + j)
+                x.unsafe_load[width=W](offset + j)
                 + SIMD[DType.float64, W](upper)
-                * dx.load[width=W](offset + j)
+                * dx.unsafe_load[width=W](offset + j)
             )
             squares += values * values
             j += W
@@ -177,9 +177,9 @@ def cone_step(x: Ptr, dx: Ptr, l: Int, q: IPtr, nq: Int) -> Float64:
             var j = 1
             while j + W <= size:
                 var values = (
-                    x.load[width=W](offset + j)
+                    x.unsafe_load[width=W](offset + j)
                     + SIMD[DType.float64, W](alpha)
-                    * dx.load[width=W](offset + j)
+                    * dx.unsafe_load[width=W](offset + j)
                 )
                 squares += values * values
                 j += W
@@ -221,7 +221,7 @@ def residuals(
 ):
     var col = 0
     while col + W <= n:
-        rd.store(col, c.load[width=W](col))
+        rd.store(col, c.unsafe_load[width=W](col))
         col += W
     while col < n:
         rd[col] = c[col]
@@ -237,8 +237,8 @@ def residuals(
             while col + W <= n:
                 rd.store(
                     col,
-                    rd.load[width=W](col)
-                    + scale * g.load[width=W](row * n + col),
+                    rd.unsafe_load[width=W](col)
+                    + scale * g.unsafe_load[width=W](row * n + col),
                 )
                 col += W
             while col < n:
@@ -250,8 +250,8 @@ def residuals(
         while col + W <= n:
             rd.store(
                 col,
-                rd.load[width=W](col)
-                + scale * a.load[width=W](row * n + col),
+                rd.unsafe_load[width=W](col)
+                + scale * a.unsafe_load[width=W](row * n + col),
             )
             col += W
         while col < n:
@@ -326,7 +326,7 @@ def fill_newton(
             while col + W <= n:
                 matrix.store(
                     rr * dim + col,
-                    a.load[width=W](row * n + col),
+                    a.unsafe_load[width=W](row * n + col),
                 )
                 col += W
             while col < n:
@@ -341,7 +341,7 @@ def fill_newton(
             while col + W <= n:
                 matrix.store(
                     rr * dim + col,
-                    scale * g.load[width=W](i * n + col),
+                    scale * g.unsafe_load[width=W](i * n + col),
                 )
                 col += W
             while col < n:
@@ -362,12 +362,12 @@ def fill_newton(
                     while col + W <= n:
                         var lzg = (
                             SIMD[DType.float64, W](z[offset])
-                            * g.load[width=W](offset * n + col)
+                            * g.unsafe_load[width=W](offset * n + col)
                         )
                         for j in range(1, size):
                             lzg += (
                                 SIMD[DType.float64, W](z[offset + j])
-                                * g.load[width=W]((offset + j) * n + col)
+                                * g.unsafe_load[width=W]((offset + j) * n + col)
                             )
                         matrix.store(rr * dim + col, -lzg)
                         col += W
@@ -386,9 +386,9 @@ def fill_newton(
                         matrix.store(
                             rr * dim + col,
                             -(
-                                zlocal * g.load[width=W](offset * n + col)
+                                zlocal * g.unsafe_load[width=W](offset * n + col)
                                 + zscalar
-                                * g.load[width=W](
+                                * g.unsafe_load[width=W](
                                     (offset + local_row) * n + col
                                 )
                             ),
@@ -470,7 +470,7 @@ def fill_newton_linear(
 
     var col = 0
     while col + W <= n:
-        rhs.store(col, -rd.load[width=W](col))
+        rhs.store(col, -rd.unsafe_load[width=W](col))
         col += W
     while col < n:
         rhs[col] = -rd[col]
@@ -506,8 +506,8 @@ def fill_newton_linear(
         while col + W <= n:
             rhs.store(
                 col,
-                rhs.load[width=W](col)
-                - rhs_scale * g.load[width=W](row * n + col),
+                rhs.unsafe_load[width=W](col)
+                - rhs_scale * g.unsafe_load[width=W](row * n + col),
             )
             col += W
         while col < n:
@@ -524,9 +524,9 @@ def fill_newton_linear(
                     while col + W <= n:
                         matrix.store(
                             left * dim + col,
-                            matrix.load[width=W](left * dim + col)
+                            matrix.unsafe_load[width=W](left * dim + col)
                             + factors
-                            * g.load[width=W](row * n + col),
+                            * g.unsafe_load[width=W](row * n + col),
                         )
                         col += W
                     while col < n:
@@ -579,8 +579,8 @@ def lorentz_solve(s: Ptr, value: Ptr, result: Ptr, size: Int):
         result.store(
             j,
             (
-                value.load[width=W](j)
-                - s.load[width=W](j) * result_scalars
+                value.unsafe_load[width=W](j)
+                - s.unsafe_load[width=W](j) * result_scalars
             ) / scalars,
         )
         j += W
@@ -628,7 +628,7 @@ def fill_newton_reduced_soc(
 
     var col = 0
     while col + W <= n:
-        rhs.store(col, -rd.load[width=W](col))
+        rhs.store(col, -rd.unsafe_load[width=W](col))
         col += W
     while col < n:
         rhs[col] = -rd[col]
@@ -664,8 +664,8 @@ def fill_newton_reduced_soc(
         while col + W <= n:
             rhs.store(
                 col,
-                rhs.load[width=W](col)
-                - rhs_scale * g.load[width=W](row * n + col),
+                rhs.unsafe_load[width=W](col)
+                - rhs_scale * g.unsafe_load[width=W](row * n + col),
             )
             col += W
         while col < n:
@@ -681,9 +681,9 @@ def fill_newton_reduced_soc(
                     while col + W <= n:
                         matrix.store(
                             left * dim + col,
-                            matrix.load[width=W](left * dim + col)
+                            matrix.unsafe_load[width=W](left * dim + col)
                             + factors
-                            * g.load[width=W](row * n + col),
+                            * g.unsafe_load[width=W](row * n + col),
                         )
                         col += W
                     while col < n:
@@ -726,8 +726,8 @@ def fill_newton_reduced_soc(
                 while col + W <= n:
                     rhs.store(
                         col,
-                        rhs.load[width=W](col)
-                        - scale * g.load[width=W]((offset + j) * n + col),
+                        rhs.unsafe_load[width=W](col)
+                        - scale * g.unsafe_load[width=W]((offset + j) * n + col),
                     )
                     col += W
                 while col < n:
@@ -767,10 +767,10 @@ def fill_newton_reduced_soc(
                         ] += row_values[offset + j] * work[j]
                     right += 1
             while right + W <= n:
-                var g0 = g.load[width=W](offset * n + right)
+                var g0 = g.unsafe_load[width=W](offset * n + right)
                 var product_scalar = z0 * g0
                 for j in range(1, size):
-                    var gj = g.load[width=W]((offset + j) * n + right)
+                    var gj = g.unsafe_load[width=W]((offset + j) * n + right)
                     product_scalar += (
                         SIMD[DType.float64, W](z[offset + j]) * gj
                     )
@@ -785,7 +785,7 @@ def fill_newton_reduced_soc(
                 for j in range(1, size):
                     s_dot_product += (
                         SIMD[DType.float64, W](s[offset + j])
-                        * product.load[width=W](j * W)
+                        * product.unsafe_load[width=W](j * W)
                     )
                 var result_scalar = (
                     s0 * product_scalar - s_dot_product
@@ -795,7 +795,7 @@ def fill_newton_reduced_soc(
                     work.store(
                         j * W,
                         (
-                            product.load[width=W](j * W)
+                            product.unsafe_load[width=W](j * W)
                             - SIMD[DType.float64, W](s[offset + j])
                             * result_scalar
                         ) / s0,
@@ -807,11 +807,11 @@ def fill_newton_reduced_soc(
                         entry += (
                             SIMD[DType.float64, W](
                                 g[(offset + j) * n + left]
-                            ) * work.load[width=W](j * W)
+                            ) * work.unsafe_load[width=W](j * W)
                         )
                     matrix.store(
                         left * dim + right,
-                        matrix.load[width=W](left * dim + right) + entry,
+                        matrix.unsafe_load[width=W](left * dim + right) + entry,
                     )
                 right += W
 
@@ -943,8 +943,8 @@ def gaussian_factor(matrix: Ptr, pivots: IPtr, dim: Int) -> Bool:
             var swap_row = matrix + best_row * dim
             var col = 0
             while col + W <= dim:
-                var tmp = pivot_row.load[width=W](col)
-                pivot_row.store(col, swap_row.load[width=W](col))
+                var tmp = pivot_row.unsafe_load[width=W](col)
+                pivot_row.store(col, swap_row.unsafe_load[width=W](col))
                 swap_row.store(col, tmp)
                 col += W
             while col < dim:
@@ -965,9 +965,9 @@ def gaussian_factor(matrix: Ptr, pivots: IPtr, dim: Int) -> Bool:
                 while col + W <= dim:
                     matrix.store(
                         row * dim + col,
-                        matrix.load[width=W](row * dim + col)
+                        matrix.unsafe_load[width=W](row * dim + col)
                         - factors
-                        * matrix.load[width=W](pivot * dim + col),
+                        * matrix.unsafe_load[width=W](pivot * dim + col),
                     )
                     col += W
                 while col < dim:
@@ -998,8 +998,8 @@ def gaussian_solve_factored(
         var col = 0
         while col + W <= row:
             values += (
-                matrix.load[width=W](row * dim + col)
-                * rhs.load[width=W](col)
+                matrix.unsafe_load[width=W](row * dim + col)
+                * rhs.unsafe_load[width=W](col)
             )
             col += W
         var value = rhs[row] - values.reduce_add()
@@ -1014,8 +1014,8 @@ def gaussian_solve_factored(
         var col = row + 1
         while col + W <= dim:
             values += (
-                matrix.load[width=W](row * dim + col)
-                * solution.load[width=W](col)
+                matrix.unsafe_load[width=W](row * dim + col)
+                * solution.unsafe_load[width=W](col)
             )
             col += W
         var value = rhs[row] - values.reduce_add()
@@ -1226,7 +1226,7 @@ def solve_impl(
         )
         i = 0
         while i + W <= m:
-            dz_aff.store(i, direction.load[width=W](n + p + i))
+            dz_aff.store(i, direction.unsafe_load[width=W](n + p + i))
             i += W
         while i < m:
             dz_aff[i] = direction[n + p + i]
@@ -1238,13 +1238,13 @@ def solve_impl(
         i = 0
         while i + W <= m:
             gap_values += (
-                s.load[width=W](i)
+                s.unsafe_load[width=W](i)
                 + SIMD[DType.float64, W](alpha_p_aff)
-                * ds_aff.load[width=W](i)
+                * ds_aff.unsafe_load[width=W](i)
             ) * (
-                z.load[width=W](i)
+                z.unsafe_load[width=W](i)
                 + SIMD[DType.float64, W](alpha_d_aff)
-                * dz_aff.load[width=W](i)
+                * dz_aff.unsafe_load[width=W](i)
             )
             i += W
         var gap_aff = gap_values.reduce_add()
@@ -1310,8 +1310,8 @@ def solve_impl(
         while i + W <= n:
             x.store(
                 i,
-                x.load[width=W](i)
-                + alpha_p_values * direction.load[width=W](i),
+                x.unsafe_load[width=W](i)
+                + alpha_p_values * direction.unsafe_load[width=W](i),
             )
             i += W
         while i < n:
@@ -1321,14 +1321,14 @@ def solve_impl(
         while i + W <= m:
             s.store(
                 i,
-                s.load[width=W](i)
-                + alpha_p_values * rhs.load[width=W](i),
+                s.unsafe_load[width=W](i)
+                + alpha_p_values * rhs.unsafe_load[width=W](i),
             )
             z.store(
                 i,
-                z.load[width=W](i)
+                z.unsafe_load[width=W](i)
                 + alpha_d_values
-                * direction.load[width=W](n + p + i),
+                * direction.unsafe_load[width=W](n + p + i),
             )
             i += W
         while i < m:
@@ -1339,8 +1339,8 @@ def solve_impl(
         while i + W <= p:
             y.store(
                 i,
-                y.load[width=W](i)
-                + alpha_d_values * direction.load[width=W](n + i),
+                y.unsafe_load[width=W](i)
+                + alpha_d_values * direction.unsafe_load[width=W](n + i),
             )
             i += W
         while i < p:
